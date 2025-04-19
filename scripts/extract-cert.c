@@ -117,8 +117,7 @@ int main(int argc, char **argv)
 		ERR(!pctx, "Failed to create EVP_PKEY_CTX");
 
 		if (key_pass) {
-			ERR(EVP_PKEY_CTX_set1_pin(pctx, key_pass, strlen(key_pass)) <= 0,
-			    "Failed to set PIN");
+			EVP_PKEY_CTX_set1_pin(pctx, key_pass, strlen(key_pass));
 		}
 
 		x509 = EVP_PKEY_CTX_load_x509(pctx, cert_src, NULL);
