@@ -94,6 +94,8 @@ static void display_openssl_errors(int l)
     }
 }
 
+static void drain_openssl_errors(void) __attribute__((unused));
+
 static void drain_openssl_errors(void)
 {
     const char *file;
