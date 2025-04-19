@@ -21,8 +21,7 @@
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
-#include <openssl/provider.h>
-#include <openssl/core_names.h>
+#include <openssl/engine.h>
 
 #define PKEY_ID_PKCS7 2
 
@@ -36,17 +35,28 @@ void format(void)
 
 static void display_openssl_errors(int l)
 {
+	const char *file;
 	char buf[120];
-	unsigned long e;
+	int e, line;
 
 	if (ERR_peek_error() == 0)
 		return;
 	fprintf(stderr, "At main.c:%d:\n", l);
 
-	while ((e = ERR_get_error())) {
+	while ((e = ERR_get_error_line(&file, &line))) {
 		ERR_error_string(e, buf);
-		fprintf(stderr, "- SSL %s\n", buf);
+		fprintf(stderr, "- SSL %s: %s:%d\n", buf, file, line);
 	}
+}
+
+static void drain_openssl_errors(void)
+{
+	const char *file;
+	int line;
+
+	if (ERR_peek_error() == 0)
+		return;
+	while (ERR_get_error_line(&file, &line)) {}
 }
 
 #define ERR(cond, fmt, ...)				\
@@ -87,7 +97,7 @@ int main(int argc, char **argv)
 
 	kbuild_verbose = atoi(getenv("KBUILD_VERBOSE")?:"0");
 
-	key_pass = getenv("KBUILD_SIGN_PIN");
+        key_pass = getenv("KBUILD_SIGN_PIN");
 
 	if (argc != 3)
 		format();
@@ -102,33 +112,28 @@ int main(int argc, char **argv)
 		fclose(f);
 		exit(0);
 	} else if (!strncmp(cert_src, "pkcs11:", 7)) {
-		OSSL_LIB_CTX *libctx = NULL;
-		OSSL_PROVIDER *provider = NULL;
-		EVP_PKEY_CTX *pctx = NULL;
-		X509 *x509 = NULL;
+		ENGINE *e;
+		struct {
+			const char *cert_id;
+			X509 *cert;
+		} parms;
 
-		libctx = OSSL_LIB_CTX_new();
-		ERR(!libctx, "Failed to create library context");
+		parms.cert_id = cert_src;
+		parms.cert = NULL;
 
-		provider = OSSL_PROVIDER_load(libctx, "pkcs11");
-		ERR(!provider, "Failed to load PKCS#11 provider");
-
-		pctx = EVP_PKEY_CTX_new_from_name(libctx, "pkcs11", NULL);
-		ERR(!pctx, "Failed to create EVP_PKEY_CTX");
-
-		if (key_pass) {
-			EVP_PKEY_CTX_set1_pin(pctx, key_pass, strlen(key_pass));
-		}
-
-		x509 = EVP_PKEY_CTX_load_x509(pctx, cert_src, NULL);
-		ERR(!x509, "Failed to load X.509 certificate from PKCS#11");
-
-		write_cert(x509);
-
-		X509_free(x509);
-		EVP_PKEY_CTX_free(pctx);
-		OSSL_PROVIDER_unload(provider);
-		OSSL_LIB_CTX_free(libctx);
+		ENGINE_load_builtin_engines();
+		drain_openssl_errors();
+		e = ENGINE_by_id("pkcs11");
+		ERR(!e, "Load PKCS#11 ENGINE");
+		if (ENGINE_init(e))
+			drain_openssl_errors();
+		else
+			ERR(1, "ENGINE_init");
+		if (key_pass)
+			ERR(!ENGINE_ctrl_cmd_string(e, "PIN", key_pass, 0), "Set PKCS#11 PIN");
+		ENGINE_ctrl_cmd(e, "LOAD_CERT_CTRL", 0, &parms, NULL, 1);
+		ERR(!parms.cert, "Get X.509 from PKCS#11");
+		write_cert(parms.cert);
 	} else {
 		BIO *b;
 		X509 *x509;
@@ -148,10 +153,7 @@ int main(int argc, char **argv)
 			}
 			ERR(!x509, "%s", cert_src);
 			write_cert(x509);
-			X509_free(x509);
 		}
-
-		BIO_free(b);
 	}
 
 	BIO_free(wb);
