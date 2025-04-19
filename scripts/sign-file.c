@@ -125,9 +125,7 @@ static EVP_PKEY *read_private_key(const char *private_key_name)
 		}
 
 		if (key_pass) {
-			if (EVP_PKEY_CTX_set1_pin(pctx, key_pass, strlen(key_pass)) <= 0) {
-				ERR(1, "Failed to set PIN");
-			}
+			EVP_PKEY_CTX_set1_pin(pctx, key_pass, strlen(key_pass));
 		}
 
 		private_key = EVP_PKEY_CTX_load(pctx, private_key_name, NULL);
@@ -204,11 +202,7 @@ int main(int argc, char **argv)
 	unsigned int use_signed_attrs;
 	const EVP_MD *digest_algo;
 	EVP_PKEY *private_key;
-#ifndef USE_PKCS7
-	CMS_ContentInfo *cms = NULL;
-#else
 	PKCS7 *pkcs7 = NULL;
-#endif
 	X509 *x509;
 	BIO *bd, *bm;
 	int opt, n;
@@ -288,18 +282,10 @@ int main(int argc, char **argv)
 
 #ifndef USE_PKCS7
 		/* Load the signature message from the digest buffer. */
-		cms = CMS_sign(NULL, NULL, NULL, NULL,
-			       CMS_NOCERTS | CMS_PARTIAL | CMS_BINARY |
-			       CMS_DETACHED | CMS_STREAM);
-		ERR(!cms, "CMS_sign");
-
-		ERR(!CMS_add1_signer(cms, x509, private_key, digest_algo,
-				     CMS_NOCERTS | CMS_BINARY |
-				     CMS_NOSMIMECAP | use_signed_attrs),
-		    "CMS_add1_signer");
-		ERR(CMS_final(cms, bm, NULL, CMS_NOCERTS | CMS_BINARY) < 0,
-		    "CMS_final");
-
+		pkcs7 = PKCS7_sign(x509, private_key, NULL, bm,
+				   PKCS7_NOCERTS | PKCS7_BINARY |
+				   PKCS7_DETACHED | use_signed_attrs);
+		ERR(!pkcs7, "PKCS7_sign");
 #else
 		pkcs7 = PKCS7_sign(x509, private_key, NULL, bm,
 				   PKCS7_NOCERTS | PKCS7_BINARY |
@@ -315,13 +301,8 @@ int main(int argc, char **argv)
 			    "asprintf");
 			b = BIO_new_file(sig_file_name, "wb");
 			ERR(!b, "%s", sig_file_name);
-#ifndef USE_PKCS7
-			ERR(i2d_CMS_bio_stream(b, cms, NULL, 0) < 0,
-			    "%s", sig_file_name);
-#else
 			ERR(i2d_PKCS7_bio(b, pkcs7) < 0,
 			    "%s", sig_file_name);
-#endif
 			BIO_free(b);
 		}
 
@@ -348,22 +329,7 @@ int main(int argc, char **argv)
 	module_size = BIO_number_written(bd);
 
 	if (!raw_sig) {
-#ifndef USE_PKCS7
-		ERR(i2d_CMS_bio_stream(bd, cms, NULL, 0) < 0, "%s", dest_name);
-#else
 		ERR(i2d_PKCS7_bio(bd, pkcs7) < 0, "%s", dest_name);
-#endif
-	} else {
-		BIO *b;
-
-		/* Read the raw signature file and write the data to the
-		 * destination file
-		 */
-		b = BIO_new_file(raw_sig_name, "rb");
-		ERR(!b, "%s", raw_sig_name);
-		while ((n = BIO_read(b, buf, sizeof(buf))), n > 0)
-			ERR(BIO_write(bd, buf, n) < 0, "%s", dest_name);
-		BIO_free(b);
 	}
 
 	sig_size = BIO_number_written(bd) - module_size;
