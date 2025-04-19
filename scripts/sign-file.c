@@ -27,8 +27,28 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
-#include <openssl/provider.h>
-#include <openssl/core_names.h>
+#include <openssl/engine.h>
+
+/*
+ * Use CMS if we have openssl-1.0.0 or newer available - otherwise we have to
+ * assume that it's not available and its header file is missing and that we
+ * should use PKCS#7 instead.  Switching to the older PKCS#7 format restricts
+ * the options we have on specifying the X.509 certificate we want.
+ *
+ * Further, older versions of OpenSSL don't support manually adding signers to
+ * the PKCS#7 message so have to accept that we get a certificate included in
+ * the signature message.  Nor do such older versions of OpenSSL support
+ * signing with anything other than SHA1 - so we're stuck with that if such is
+ * the case.
+ */
+#if OPENSSL_VERSION_NUMBER < 0x10000000L || defined(OPENSSL_NO_CMS)
+#define USE_PKCS7
+#endif
+#ifndef USE_PKCS7
+#include <openssl/cms.h>
+#else
+#include <openssl/pkcs7.h>
+#endif
 
 struct module_signature {
 	uint8_t		algo;		/* Public-key crypto algorithm [0] */
@@ -56,17 +76,28 @@ void format(void)
 
 static void display_openssl_errors(int l)
 {
+	const char *file;
 	char buf[120];
-	unsigned long e;
+	int e, line;
 
 	if (ERR_peek_error() == 0)
 		return;
 	fprintf(stderr, "At main.c:%d:\n", l);
 
-	while ((e = ERR_get_error())) {
+	while ((e = ERR_get_error_line(&file, &line))) {
 		ERR_error_string(e, buf);
-		fprintf(stderr, "- SSL %s\n", buf);
+		fprintf(stderr, "- SSL %s: %s:%d\n", buf, file, line);
 	}
+}
+
+static void drain_openssl_errors(void)
+{
+	const char *file;
+	int line;
+
+	if (ERR_peek_error() == 0)
+		return;
+	while (ERR_get_error_line(&file, &line)) {}
 }
 
 #define ERR(cond, fmt, ...)				\
@@ -91,7 +122,7 @@ static int pem_pw_cb(char *buf, int len, int w, void *v)
 	if (pwlen >= len)
 		return -1;
 
- strcpy(buf, key_pass);
+	strcpy(buf, key_pass);
 
 	/* If it's wrong, don't keep trying it. */
 	key_pass = NULL;
@@ -101,50 +132,35 @@ static int pem_pw_cb(char *buf, int len, int w, void *v)
 
 static EVP_PKEY *read_private_key(const char *private_key_name)
 {
-	EVP_PKEY *private_key = NULL;
-	OSSL_LIB_CTX *libctx = NULL;
-	OSSL_PROVIDER *provider = NULL;
-	EVP_PKEY_CTX *pctx = NULL;
-	BIO *b = NULL;
+	EVP_PKEY *private_key;
 
 	if (!strncmp(private_key_name, "pkcs11:", 7)) {
-		/* Load the PKCS#11 provider */
-		libctx = OSSL_LIB_CTX_new();
-		if (!libctx) {
-			ERR(1, "Failed to create library context");
-		}
+		ENGINE *e;
 
-		provider = OSSL_PROVIDER_load(libctx, "pkcs11");
-		if (!provider) {
-			ERR(1, "Failed to load PKCS#11 provider");
-		}
-
-		pctx = EVP_PKEY_CTX_new_from_name(libctx, "pkcs11", NULL);
-		if (!pctx) {
-			ERR(1, "Failed to create EVP_PKEY_CTX");
-		}
-
-		if (key_pass) {
-			EVP_PKEY_CTX_set1_pin(pctx, key_pass, strlen(key_pass));
-		}
-
-		private_key = EVP_PKEY_CTX_load(pctx, private_key_name, NULL);
-		if (!private_key) {
-			ERR(1, "Failed to load private key from PKCS#11");
-		}
+		ENGINE_load_builtin_engines();
+		drain_openssl_errors();
+		e = ENGINE_by_id("pkcs11");
+		ERR(!e, "Load PKCS#11 ENGINE");
+		if (ENGINE_init(e))
+			drain_openssl_errors();
+		else
+			ERR(1, "ENGINE_init");
+		if (key_pass)
+			ERR(!ENGINE_ctrl_cmd_string(e, "PIN", key_pass, 0),
+			    "Set PKCS#11 PIN");
+		private_key = ENGINE_load_private_key(e, private_key_name,
+						      NULL, NULL);
+		ERR(!private_key, "%s", private_key_name);
 	} else {
+		BIO *b;
+
 		b = BIO_new_file(private_key_name, "rb");
 		ERR(!b, "%s", private_key_name);
-
-		private_key = PEM_read_bio_PrivateKey(b, NULL, pem_pw_cb, NULL);
+		private_key = PEM_read_bio_PrivateKey(b, NULL, pem_pw_cb,
+						      NULL);
 		ERR(!private_key, "%s", private_key_name);
-
 		BIO_free(b);
 	}
-
-	OSSL_PROVIDER_unload(provider);
-	OSSL_LIB_CTX_free(libctx);
-	EVP_PKEY_CTX_free(pctx);
 
 	return private_key;
 }
@@ -202,7 +218,12 @@ int main(int argc, char **argv)
 	unsigned int use_signed_attrs;
 	const EVP_MD *digest_algo;
 	EVP_PKEY *private_key;
+#ifndef USE_PKCS7
+	CMS_ContentInfo *cms = NULL;
+	unsigned int use_keyid = 0;
+#else
 	PKCS7 *pkcs7 = NULL;
+#endif
 	X509 *x509;
 	BIO *bd, *bm;
 	int opt, n;
@@ -225,7 +246,7 @@ int main(int argc, char **argv)
 		case 'p': save_sig = true; break;
 		case 'd': sign_only = true; save_sig = true; break;
 #ifndef USE_PKCS7
-		case 'k': use_signed_attrs |= CMS_USE_KEYID; break;
+		case 'k': use_keyid = CMS_USE_KEYID; break;
 #endif
 		case -1: break;
 		default: format();
@@ -282,10 +303,19 @@ int main(int argc, char **argv)
 
 #ifndef USE_PKCS7
 		/* Load the signature message from the digest buffer. */
-		pkcs7 = PKCS7_sign(x509, private_key, NULL, bm,
-				   PKCS7_NOCERTS | PKCS7_BINARY |
-				   PKCS7_DETACHED | use_signed_attrs);
-		ERR(!pkcs7, "PKCS7_sign");
+		cms = CMS_sign(NULL, NULL, NULL, NULL,
+			       CMS_NOCERTS | CMS_PARTIAL | CMS_BINARY |
+			       CMS_DETACHED | CMS_STREAM);
+		ERR(!cms, "CMS_sign");
+
+		ERR(!CMS_add1_signer(cms, x509, private_key, digest_algo,
+				     CMS_NOCERTS | CMS_BINARY |
+				     CMS_NOSMIMECAP | use_keyid |
+				     use_signed_attrs),
+		    "CMS_add1_signer");
+		ERR(CMS_final(cms, bm, NULL, CMS_NOCERTS | CMS_BINARY) < 0,
+		    "CMS_final");
+
 #else
 		pkcs7 = PKCS7_sign(x509, private_key, NULL, bm,
 				   PKCS7_NOCERTS | PKCS7_BINARY |
@@ -301,8 +331,13 @@ int main(int argc, char **argv)
 			    "asprintf");
 			b = BIO_new_file(sig_file_name, "wb");
 			ERR(!b, "%s", sig_file_name);
+#ifndef USE_PKCS7
+			ERR(i2d_CMS_bio_stream(b, cms, NULL, 0) < 0,
+			    "%s", sig_file_name);
+#else
 			ERR(i2d_PKCS7_bio(b, pkcs7) < 0,
 			    "%s", sig_file_name);
+#endif
 			BIO_free(b);
 		}
 
@@ -329,7 +364,22 @@ int main(int argc, char **argv)
 	module_size = BIO_number_written(bd);
 
 	if (!raw_sig) {
+#ifndef USE_PKCS7
+		ERR(i2d_CMS_bio_stream(bd, cms, NULL, 0) < 0, "%s", dest_name);
+#else
 		ERR(i2d_PKCS7_bio(bd, pkcs7) < 0, "%s", dest_name);
+#endif
+	} else {
+		BIO *b;
+
+		/* Read the raw signature file and write the data to the
+		 * destination file
+		 */
+		b = BIO_new_file(raw_sig_name, "rb");
+		ERR(!b, "%s", raw_sig_name);
+		while ((n = BIO_read(b, buf, sizeof(buf))), n > 0)
+			ERR(BIO_write(bd, buf, n) < 0, "%s", dest_name);
+		BIO_free(b);
 	}
 
 	sig_size = BIO_number_written(bd) - module_size;
