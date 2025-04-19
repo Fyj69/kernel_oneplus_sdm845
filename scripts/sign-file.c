@@ -30,27 +30,6 @@
 #include <openssl/provider.h>
 #include <openssl/core_names.h>
 
-/*
- * Use CMS if we have openssl-1.0.0 or newer available - otherwise we have to
- * assume that it's not available and its header file is missing and that we
- * should use PKCS#7 instead.  Switching to the older PKCS#7 format restricts
- * the options we have on specifying the X.509 certificate we want.
- *
- * Further, older versions of OpenSSL don't support manually adding signers to
- * the PKCS#7 message so have to accept that we get a certificate included in
- * the signature message.  Nor do such older versions of OpenSSL support
- * signing with anything other than SHA1 - so we're stuck with that if such is
- * the case.
- */
-#if OPENSSL_VERSION_NUMBER < 0x10000000L || defined(OPENSSL_NO_CMS)
-#define USE_PKCS7
-#endif
-#ifndef USE_PKCS7
-#include <openssl/cms.h>
-#else
-#include <openssl/pkcs7.h>
-#endif
-
 struct module_signature {
 	uint8_t		algo;		/* Public-key crypto algorithm [0] */
 	uint8_t		hash;		/* Digest algorithm [0] */
@@ -77,7 +56,6 @@ void format(void)
 
 static void display_openssl_errors(int l)
 {
-	const char *file;
 	char buf[120];
 	unsigned long e;
 
@@ -86,18 +64,8 @@ static void display_openssl_errors(int l)
 	fprintf(stderr, "At main.c:%d:\n", l);
 
 	while ((e = ERR_get_error())) {
-		file = ERR_get_error_line_data(NULL, NULL, NULL, NULL);
 		ERR_error_string(e, buf);
-		fprintf(stderr, "- SSL %s: %s\n", buf, file);
-	}
-}
-
-static void drain_openssl_errors(void)
-{
-	unsigned long e;
-
-	while ((e = ERR_get_error())) {
-		(void)e;
+		fprintf(stderr, "- SSL %s\n", buf);
 	}
 }
 
@@ -123,7 +91,7 @@ static int pem_pw_cb(char *buf, int len, int w, void *v)
 	if (pwlen >= len)
 		return -1;
 
-	strcpy(buf, key_pass);
+ strcpy(buf, key_pass);
 
 	/* If it's wrong, don't keep trying it. */
 	key_pass = NULL;
