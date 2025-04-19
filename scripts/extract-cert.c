@@ -36,7 +36,6 @@ void format(void)
 
 static void display_openssl_errors(int l)
 {
-	const char *file;
 	char buf[120];
 	unsigned long e;
 
@@ -45,18 +44,8 @@ static void display_openssl_errors(int l)
 	fprintf(stderr, "At main.c:%d:\n", l);
 
 	while ((e = ERR_get_error())) {
-		file = ERR_get_error_line_data(NULL, NULL, NULL, NULL);
 		ERR_error_string(e, buf);
-		fprintf(stderr, "- SSL %s: %s\n", buf, file);
-	}
-}
-
-static void drain_openssl_errors(void)
-{
-	unsigned long e;
-
-	while ((e = ERR_get_error())) {
-		(void)e;
+		fprintf(stderr, "- SSL %s\n", buf);
 	}
 }
 
