@@ -1000,10 +1000,10 @@ void log_buf_kexec_setup(void)
 #endif
 
 /* requested log_buf_len from kernel cmdline */
-static unsigned long __initdata new_log_buf_len;
+static unsigned long new_log_buf_len;
 
 /* we practice scaling the ring buffer by powers of 2 */
-static void __init log_buf_len_update(u64 size)
+static void log_buf_len_update(u64 size)
 {
 	if (size > (u64)LOG_BUF_LEN_MAX) {
 		size = (u64)LOG_BUF_LEN_MAX;
