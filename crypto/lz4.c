@@ -15,7 +15,7 @@ struct lz4_ctx {
 	void *lz4_comp_mem;
 };
 
-static void *lz4_alloc_ctx(struct crypto_scomp *tfm)
+static void *lz4_alloc_ctx(struct crypto_tfm *tfm)
 {
 	void *ctx;
 
@@ -37,7 +37,7 @@ static int lz4_init(struct crypto_tfm *tfm)
 	return 0;
 }
 
-static void lz4_free_ctx(struct crypto_scomp *tfm, void *ctx)
+static void lz4_free_ctx(struct crypto_tfm *tfm, void *ctx)
 {
 	vfree(ctx);
 }
