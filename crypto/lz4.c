@@ -10,12 +10,13 @@
 #include <linux/crypto.h>
 #include <linux/vmalloc.h>
 #include <linux/lz4.h>
+#include <crypto/internal/scompress.h>
 
 struct lz4_ctx {
 	void *lz4_comp_mem;
 };
 
-static void *lz4_alloc_ctx(struct crypto_tfm *tfm)
+static void *lz4_alloc_ctx(struct crypto_scomp *tfm)
 {
 	void *ctx;
 
@@ -37,7 +38,7 @@ static int lz4_init(struct crypto_tfm *tfm)
 	return 0;
 }
 
-static void lz4_free_ctx(struct crypto_tfm *tfm, void *ctx)
+static void lz4_free_ctx(struct crypto_scomp *tfm, void *ctx)
 {
 	vfree(ctx);
 }
@@ -62,6 +63,13 @@ static int __lz4_compress_crypto(const u8 *src, unsigned int slen,
 	return 0;
 }
 
+static int lz4_scompress(struct crypto_scomp *tfm, const u8 *src,
+			 unsigned int slen, u8 *dst, unsigned int *dlen,
+			 void *ctx)
+{
+	return __lz4_compress_crypto(src, slen, dst, dlen, ctx);
+}
+
 static int lz4_compress_crypto(struct crypto_tfm *tfm, const u8 *src,
 			       unsigned int slen, u8 *dst, unsigned int *dlen)
 {
@@ -80,6 +88,13 @@ static int __lz4_decompress_crypto(const u8 *src, unsigned int slen,
 
 	*dlen = out_len;
 	return 0;
+}
+
+static int lz4_sdecompress(struct crypto_scomp *tfm, const u8 *src,
+			   unsigned int slen, u8 *dst, unsigned int *dlen,
+			   void *ctx)
+{
+	return __lz4_decompress_crypto(src, slen, dst, dlen, NULL);
 }
 
 static int lz4_decompress_crypto(struct crypto_tfm *tfm, const u8 *src,
@@ -102,6 +117,18 @@ static struct crypto_alg alg_lz4 = {
 	.coa_decompress		= lz4_decompress_crypto } }
 };
 
+static struct scomp_alg scomp = {
+	.alloc_ctx		= lz4_alloc_ctx,
+	.free_ctx		= lz4_free_ctx,
+	.compress		= lz4_scompress,
+	.decompress		= lz4_sdecompress,
+	.base			= {
+		.cra_name	= "lz4",
+		.cra_driver_name = "lz4-scomp",
+		.cra_module	 = THIS_MODULE,
+	}
+};
+
 static int __init lz4_mod_init(void)
 {
 	int ret;
@@ -110,12 +137,19 @@ static int __init lz4_mod_init(void)
 	if (ret)
 		return ret;
 
+	ret = crypto_register_scomp(&scomp);
+	if (ret) {
+		crypto_unregister_alg(&alg_lz4);
+		return ret;
+	}
+
 	return ret;
 }
 
 static void __exit lz4_mod_fini(void)
 {
 	crypto_unregister_alg(&alg_lz4);
+	crypto_unregister_scomp(&scomp);
 }
 
 subsys_initcall(lz4_mod_init);
