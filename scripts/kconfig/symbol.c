@@ -1071,17 +1071,12 @@ static struct dep_stack {
 
 static void dep_stack_insert(struct dep_stack *stack, struct symbol *sym)
 {
-    struct dep_stack *new_stack = malloc(sizeof(*stack));
-    if (!new_stack) {
-        fprintf(stderr, "Memory allocation failed!\n");
-        return;
-    }
-    memset(new_stack, 0, sizeof(*new_stack));
-    if (check_top)
-        check_top->next = new_stack;
-    new_stack->prev = check_top;
-    new_stack->sym = sym;
-    check_top = new_stack;
+	memset(stack, 0, sizeof(*stack));
+	if (check_top)
+		check_top->next = stack;
+	stack->prev = check_top;
+	stack->sym = sym;
+	check_top = stack;
 }
 
 static void dep_stack_remove(void)
