@@ -1103,7 +1103,7 @@ static void sym_check_print_recursive(struct symbol *last_sym)
 	struct property *prop;
 
 	if (sym_is_choice_value(last_sym)) {
-		dep_stack_insert(&cv_stack, last_sym);
+		dep_stack_insert(cv_stack, last_sym);
 		last_sym = prop_get_symbol(sym_get_choice_prop(last_sym));
 	}
 
@@ -1165,7 +1165,7 @@ static void sym_check_print_recursive(struct symbol *last_sym)
 		}
 	}
 
-	if (check_top == &cv_stack)
+	if (check_top == cv_stack)
 		dep_stack_remove();
 
 	free(cv_stack);
